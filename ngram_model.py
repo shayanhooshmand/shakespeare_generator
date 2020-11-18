@@ -9,6 +9,16 @@ def get_lexicon(corpus, minimum) :
     counts = Counter(corpus)
     return set(word for word in counts if counts[word] > minimum)
 
+def pre_process(corpus, lexicon) :
+    """
+    replace words in corpus with UNK token if word
+    not in lexicon
+    """
+    for line in corpus :
+        for i, (word, tag) in enumerate(line) :
+            if word not in lexicon :
+                line[i] = ('UNK', 'UNK')
+
 def get_ngrams(line, n) :
     """
     returns list of ngrams given a corpus and size n
@@ -36,17 +46,14 @@ class Ngram_model :
 
         self.corpus = [nltk.pos_tag(line) for line in corpus]
         #replace words that have small counts with 'UNK' token
-        for line in self.corpus :
-            for i, (word, tag) in enumerate(line) :
-                if word not in self.lexicon and not POS_TAG :
-                    line[i] = ('UNK', 'UNK')
-        
-        for line in self.corpus :
-            print(line)
+        #only if counting words and not tags
+        if not POS_TAG : pre_process(self.corpus, self.lexicon)
         
         #count up all the k-grams from unigram to ngram
         self.ngram_counts = [self.count_ngrams(i) for i in range(1, self.n+1)]
-    
+
+        return
+
     def count_ngrams(self, n) :
 
         ngram_counts = defaultdict(int)
