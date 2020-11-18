@@ -49,6 +49,8 @@ class Ngram_model :
         #only if counting words and not tags
         if not POS_TAG : pre_process(self.corpus, self.lexicon)
         
+        #initialize total number of tokens
+        self.M = 0
         #count up all the k-grams from unigram to ngram
         self.ngram_counts = [self.count_ngrams(i) for i in range(1, self.n+1)]
 
@@ -68,8 +70,52 @@ class Ngram_model :
                 if n > 1 :
                     if ngram[0] == 'START' and ngram[1] != ngram[0] :
                         ngram_counts[START] += 1
+                #if we are counting unigrams then also use this loop to calculate
+                #count up total number of tokens
+                elif n == 1 :
+                    self.M += 1
         
         return ngram_counts
+    
+    def backoff_prob(self, ngram, beta) :
+        """
+        returns backoff probability of an ngram
+        beta : discount with 0<beta<1
+        """
+        
+        if not 0 < beta < 1 :
+            print("ERR: Beta must be between 0 and 1 for backoff calculation.")
+            exit(1)
+        
+        def get_alpha(ng) :
+            mass = 0
+            for n_plus_1_gram in self.ngram_counts[len(ng)] :
+                if n_plus_1_gram[:-1] == ng :
+                    raw_count = self.ngram_counts[len(ng)][n_plus_1_gram]
+                    if raw_count > 0 :
+                        mass += raw_count - beta
+            return 1 - (mass / self.ngram_counts[len(ng)-1][ng])
+
+        #base : unigram
+        if len(ngram) == 1 :
+            return self.ngram_counts[0][ngram] / self.M
+
+        ngram_count = self.ngram_counts[len(ngram)-1][ngram]
+        #base : count is greater than 0
+        if ngram_count > 0 :
+            return (ngram_count - beta) / self.ngram_counts[len(ngram)-2][ngram[:-1]]
+        
+        #otherwise backoff
+        alpha = get_alpha(ngram[:-1])
+        normalizer = 0
+        #construct all the other unseen ngrams in this context
+        for word in self.lexicon :
+            other_ngram = ngram[:-1] + (word,)
+            if self.ngram_counts[len(other_ngram)-1][other_ngram] == 0 :
+                normalizer += self.backoff_prob(other_ngram[:-1], beta)
+        
+        return alpha * self.backoff_prob(ngram[:-1], beta) / normalizer
+        
 
 
 training_file = "./training/formatted_training/test_training.txt"
@@ -77,6 +123,5 @@ with open(training_file, 'r') as file :
     corpus = [line.rstrip('\n') for line in file]
 
 model = Ngram_model(corpus, 3, 0)
-for dictionary in model.ngram_counts :
-    print(dictionary)
-    print()
+print(len(model.lexicon))
+print(model.backoff_prob(('in', 'scuffles'), 0.5))
