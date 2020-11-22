@@ -1,5 +1,6 @@
 import nltk
 from collections import defaultdict, Counter
+import math
 
 def get_lexicon(corpus, minimum) :
     """
@@ -9,61 +10,89 @@ def get_lexicon(corpus, minimum) :
     counts = Counter(corpus)
     return set(word for word in counts if counts[word] > minimum)
 
-def pre_process(corpus, lexicon) :
+def pre_process(corpus, lexicon, POS_TAG) :
     """
-    replace words in corpus with UNK token if word
-    not in lexicon
+    pos tag corpus and replace words in corpus
+    with UNK token if word not in lexicon
     """
+    corpus = [nltk.pos_tag(line) for line in corpus]
+
+    #replace words that have small counts with 'UNK' token
+    #only if counting words and not tags
+    if POS_TAG : return corpus
+
     for line in corpus :
         for i, (word, tag) in enumerate(line) :
             if word not in lexicon :
                 line[i] = ('UNK', 'UNK')
+    
+    return corpus
 
 def get_ngrams(line, n) :
     """
-    returns list of ngrams given a corpus and size n
+    returns list of ngrams given a list of tokens and ngram size n
     """
+    if type(line) != list :
+        print("ERR: did not get a list type when parsing ngrams.")
+        print("Instead, we got ", type(line))
+        print("It had value: ", line)
     bookended = [('START', 'START')] * max(1, n-1) + line + [('STOP', 'STOP')]
     return [tuple(bookended[i:i+n]) for i in range(len(bookended) - (n - 1))]
 
 class Ngram_model :
 
-    def __init__(self, corpus, n=3, POS_TAG=1) :
+    def __init__(self, corpus, n=3, POS_TAG=0) :
         """
         corpus : list of strings, each string a Shakespeare line
         n : size of ngram for model
         POS_TAG : 1 means use POS_TAGS for ngrams, 0 means use words
         """
+
+        if n <= 0 :
+            print("ERR: ngram size must be positive")
+            exit(1)
+        
+        if POS_TAG != 0 and POS_TAG != 1 :
+            print("ERR: POS_TAG argument must be 0 or 1")
+            exit(1)
+        
         self.n = n
         self.POS_TAG = POS_TAG
+        #initialize for backoff calculations
+        self.alpha = {}
+        self.normalizer = {}
 
         corpus = [nltk.word_tokenize(line) for line in corpus]
+        print("TRAINING CORPUS: TOKENIZED")
 
         self.lexicon = get_lexicon([word for line in corpus for word in line], 0)
         self.lexicon.add('START')
         self.lexicon.add('STOP')
-        self.lexicon.add('UNK')
+        if not POS_TAG : self.lexicon.add('UNK')
 
-        self.corpus = [nltk.pos_tag(line) for line in corpus]
-        #replace words that have small counts with 'UNK' token
-        #only if counting words and not tags
-        if not POS_TAG : pre_process(self.corpus, self.lexicon)
+        self.corpus = pre_process(corpus, self.lexicon, self.POS_TAG)
+        print("TRAINING CORPUS: PREPROCESSED")
         
         #initialize total number of tokens
         self.M = 0
         #count up all the k-grams from unigram to ngram
         self.ngram_counts = [self.count_ngrams(i) for i in range(1, self.n+1)]
+        print("TRAINING CORPUS: NGRAMS COUNTED")
 
         return
+    
+    def get_ngrams(self, line, n) :
+        ngrams = []
+        for tuple_ngram in get_ngrams(line, n) :
+            #pick either word or tag to count depending on instance of model
+            ngrams.append(tuple([pair[self.POS_TAG] for pair in tuple_ngram]))
+        return ngrams
 
     def count_ngrams(self, n) :
-
         ngram_counts = defaultdict(int)
         START = tuple(['START'] * n)
         for line in self.corpus :
-            for tuple_ngram in get_ngrams(line, n) :
-                #pick either word or tag to count depending on instance of model
-                ngram = tuple([pair[self.POS_TAG] for pair in tuple_ngram])
+            for ngram in self.get_ngrams(line, n) :
                 ngram_counts[ngram] += 1
                 #add ngram full of starts for each beginning of sentence
                 #for when we calculate likelihoods later
@@ -76,52 +105,125 @@ class Ngram_model :
                     self.M += 1
         
         return ngram_counts
+
+    def count(self, ng) :
+        if len(ng) > self.n :
+            print("ERR: ngram length out of range for model")
+            exit(1)
+
+        return self.ngram_counts[len(ng)-1][ng]
+    
+    def get_alpha(self, ng, beta) :
+        if ng in self.alpha :
+            return self.alpha[ng]
+        
+        #count how many words copmlete this n+1_gram
+        num_grams = 0
+        for word in self.lexicon :
+            ng_plus1 = ng + (word,)
+            if self.count(ng_plus1) > 0 :
+                num_grams += 1
+        
+        return (num_grams * beta) / self.count(ng)
     
     def backoff_prob(self, ngram, beta) :
-        """
-        returns backoff probability of an ngram
-        beta : discount with 0<beta<1
-        """
         
-        if not 0 < beta < 1 :
-            print("ERR: Beta must be between 0 and 1 for backoff calculation.")
-            exit(1)
+        def get_normalizer(ng) :
+            #avoid recalculating
+            if ng in self.normalizer :
+                return self.normalizer[ng]
+            
+            normalizer = 0
+            #check to see if the larger n+1_gram has count of 0
+            #if so, then add the probability of the ngram starting
+            #from the first index of n+1_gram to the end to the normalizer
+            for word in self.lexicon :
+                if word == 'START' : continue
+                ng_plus1 = ng + (word,)
+                if self.count(ng_plus1) == 0 :
+                    normalizer += self.backoff_prob(ng_plus1[1:], beta)
+
+            self.normalizer[ng] = normalizer
+            return self.normalizer[ng]
         
-        def get_alpha(ng) :
-            mass = 0
-            for n_plus_1_gram in self.ngram_counts[len(ng)] :
-                if n_plus_1_gram[:-1] == ng :
-                    raw_count = self.ngram_counts[len(ng)][n_plus_1_gram]
-                    if raw_count > 0 :
-                        mass += raw_count - beta
-            return 1 - (mass / self.ngram_counts[len(ng)-1][ng])
-
-        #base : unigram
-        if len(ngram) == 1 :
-            return self.ngram_counts[0][ngram] / self.M
-
-        ngram_count = self.ngram_counts[len(ngram)-1][ngram]
-        #base : count is greater than 0
+        #base case 1 : unigram
+        #simple MLE
+        if len(ngram) == 1:
+            return self.count(ngram) / self.M
+        
+        ngram_count = self.count(ngram)
+        #base case 2 : seen ngram
+        #discounted MLE
         if ngram_count > 0 :
-            return (ngram_count - beta) / self.ngram_counts[len(ngram)-2][ngram[:-1]]
+            return (ngram_count - beta) / self.count(ngram[:-1])
         
-        #otherwise backoff
-        alpha = get_alpha(ngram[:-1])
-        normalizer = 0
-        #construct all the other unseen ngrams in this context
-        for word in self.lexicon :
-            other_ngram = ngram[:-1] + (word,)
-            if self.ngram_counts[len(other_ngram)-1][other_ngram] == 0 :
-                normalizer += self.backoff_prob(other_ngram[:-1], beta)
+        #otherwise, we have to recurse
+        alpha = self.get_alpha(ngram[:-1], beta)
+        normalizer = get_normalizer(ngram[:-1])
+
+        return alpha * self.backoff_prob(ngram[1:], beta) / normalizer
+    
+    def sentence_logprob(self, sentence, beta) :
+        total = 0
+        for ngram in self.get_ngrams(sentence, self.n) :
+            curr = self.backoff_prob(ngram, beta)
+            total += math.log2(curr)
         
-        return alpha * self.backoff_prob(ngram[:-1], beta) / normalizer
+        return total
+
+    def perplexity(self, corpus, beta):
+        """
+        calculate the log probability of an entire corpus
+        assumes corpus is line by line strings
+        """
+        #preprocess the corpus
+        corpus = [nltk.word_tokenize(line) for line in corpus]
+        print("TEST CORPUS TOKENIZED")
+
+        corpus = pre_process(corpus, self.lexicon, self.POS_TAG)
+        print("TEST CORPUS PREPROCESSED")
+        l, M = 0, 0
+        for sentence in corpus :
+            # add extra 1 to account for start/end tokens in padding trigrams
+            M += len(sentence) + 1
+            l += self.sentence_logprob(sentence, beta)
         
+        return 2 ** -(l/M)
+
+def open_corpus(path) :
+    with open(path, 'r') as file :
+        corpus = [line.rstrip('\n') for line in file]
+    return corpus
+
+corpus = open_corpus("./training/formatted_training/training.txt")
+model = Ngram_model(corpus, 3)
 
 
-training_file = "./training/formatted_training/test_training.txt"
-with open(training_file, 'r') as file :
-    corpus = [line.rstrip('\n') for line in file]
+# corpus = open_corpus("./training/formatted_training/test_training1.txt")
+# model = Ngram_model(corpus, 2)
+# beta = 0.5
+# bigram = ('y', 'y')
+# print(model.backoff_prob(('y', 'y'), beta))
+# print(model.get_alpha(bigram[:-1], beta))
+# print(model.perplexity(corpus, 0.9))
 
-model = Ngram_model(corpus, 3, 0)
-print(len(model.lexicon))
-print(model.backoff_prob(('in', 'scuffles'), 0.5))
+
+# val = model.backoff_prob(('START','x', 'y'),beta)
+# print(val)
+
+# corpus = open_corpus("./training/formatted_training/training.txt")
+
+
+
+
+
+
+
+# model = Ngram_model(corpus, 3, 0)
+# print(len(model.lexicon))
+# print(model.backoff_prob(('in', 'scuffles'), 0.5))
+# sentence = nltk.pos_tag(nltk.word_tokenize("Have glow'd like plated Mars, now bend, now turn,"))
+# print(model.sentence_logprob(sentence, 0.0000000001))
+
+# test_corpus = open_corpus("./test/formatted_test/test.txt")
+# print(model.perplexity(test_corpus, 0.2))
