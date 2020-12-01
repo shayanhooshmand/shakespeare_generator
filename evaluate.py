@@ -10,6 +10,7 @@ test = open_corpus("test.txt")
 
 modes = {0 : "WORDS", 1 : "TAGS"}
 for mode in modes :
+    if mode == 0 : continue
     for n in range(2, 6) :
         model = Ngram_model(train, n, mode)
         # model.tune(tune)

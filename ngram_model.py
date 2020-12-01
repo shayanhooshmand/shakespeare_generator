@@ -1,6 +1,7 @@
 import nltk
 from collections import defaultdict, Counter
 import math
+import random
 
 def get_lexicon(corpus, minimum) :
     """
@@ -32,10 +33,6 @@ def get_ngrams(line, n) :
     """
     returns list of ngrams given a list of tokens and ngram size n
     """
-    if type(line) != list :
-        print("ERR: did not get a list type when parsing ngrams.")
-        print("Instead, we got ", type(line))
-        print("It had value: ", line)
     bookended = [('START', 'START')] * max(1, n-1) + line + [('STOP', 'STOP')]
     return [tuple(bookended[i:i+n]) for i in range(len(bookended) - (n - 1))]
 
@@ -148,6 +145,52 @@ class Ngram_model :
             exit(1)
 
         return self.ngram_counts[len(ng)-1][ng]
+    
+    def generate_sentence(self, k=20) :
+        """
+        generate a sentence based on the model's probabilities
+        k is the maximum size of the sentence if stop token is not produced
+        """
+        padding = max(self.n-1, 1)
+        sentence = ['START'] * padding
+        while k > 0 and sentence[-1] != 'STOP' :
+            prev = tuple(sentence[-(self.n-1):])
+            choices = []
+            probs = []
+            for ngram in self.ngram_counts[len(prev)] :
+                if ngram[:-1] == prev and ngram[-1] != 'START' :
+                    choices.append(ngram[-1])
+                    probs.append(self.count(ngram) / self.count(prev))
+                
+            print(choices)
+            print(probs)
+            choice = random.choices(choices, weights=probs)[0]
+            sentence.append(choice)
+            
+            k -= 1
+        
+        print(sentence)
+        print(padding)
+        end = -1 if sentence[-1] == 'STOP' else len(sentence)
+        sentence = sentence[padding:end]
+
+        if self.POS_TAG :
+            print(sentence)
+            for i, tag in enumerate(sentence) :
+                print(tag)
+                choices = []
+                probs = []
+                for word, count in self.word_counts[tag].items() :
+                    choices.append(word)
+                    probs.append(count / self.count((tag,)))
+                
+                print(choices)
+                print(probs)
+                choice = random.choices(choices, weights=probs)[0]
+                sentence[i] = choice
+        
+        return sentence
+
     
     def raw_ngram_prob(self, ng) :
         """
